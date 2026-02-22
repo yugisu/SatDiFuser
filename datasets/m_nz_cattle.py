@@ -6,7 +6,7 @@ import torchvision.transforms.functional as F
 from typing import Dict, Tuple, Any
 from PIL import Image
 import geobench
-
+from datasets.utils import get_sample_center_latlon
 
 
 class NZCattle:
@@ -37,7 +37,8 @@ class NZCattle:
         image, band_names = sample.pack_to_3d(band_names=rgb_bands)
         label = sample.label.data
         filename = sample.sample_name
-        
+        lat, lon = get_sample_center_latlon(sample)
+
         image = image.transpose(2, 0, 1).astype(np.float32)
         image = image / 255
         image = np.clip(image, 0, 1)
@@ -69,7 +70,7 @@ class NZCattle:
             'rgb': image,
             'label': torch.tensor(label, dtype=torch.int64),
             'filename': filename,
-            'metadata': {}
+            'metadata': {'lat': lat, 'lon': lon},
         }
         return output
 

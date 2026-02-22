@@ -205,7 +205,17 @@ def main():
         logger.info(f"Group {i}: {group_params:,} parameters, learning rate: {group['lr']}")
 
     # Set loss criterion and random generator for reproducibility
-    criterion = set_criterion(cfg.task, cfg.get("ignore_index", -100))
+    vicreg_kwargs = (
+        {
+            "lambda_inv": cfg.get("vicreg_lambda", 25.0),
+            "mu_var":     cfg.get("vicreg_mu",     25.0),
+            "nu_cov":     cfg.get("vicreg_nu",      1.0),
+            "gamma":      cfg.get("vicreg_gamma",   1.0),
+            "geo_positive_threshold_m": cfg.get("geo_positive_threshold_m", 1000.0),
+        }
+        if cfg.task == "embedding" else None
+    )
+    criterion = set_criterion(cfg.task, cfg.get("ignore_index", -100), vicreg_kwargs)
     g = torch.Generator(device=cfg.device).manual_seed(cfg.seed)
 
     start_epoch = 0
@@ -244,6 +254,7 @@ def main():
                 images = batch['rgb'].to(cfg.device)
                 labels = batch['label'].to(cfg.device)
                 filenames = batch['filename']
+                meta = batch.get('metadata', {})
 
                 # Encode images to latent space
                 latents = vae.encode(images).latent_dist.sample(generator=g) * 0.18215
@@ -255,7 +266,17 @@ def main():
                         
                 output_shape = (cfg.original_img_size, cfg.original_img_size) if 'seg' in cfg.task else None
                 logits, _ = decoder(feats, output_shape=output_shape)
-                loss = criterion(logits, labels)
+
+                if cfg.task == 'embedding':
+                    # Build (B, 2) coords tensor [lat, lon]; NaN where unavailable.
+                    _lats = [v if v is not None else float('nan') for v in meta.get('lat', [float('nan')] * len(filenames))]
+                    _lons = [v if v is not None else float('nan') for v in meta.get('lon', [float('nan')] * len(filenames))]
+                    coords = torch.tensor(
+                        list(zip(_lats, _lons)), dtype=torch.float32, device=cfg.device
+                    )
+                    loss = criterion(logits, coords)
+                else:
+                    loss = criterion(logits, labels)
                 loss.backward()
                 optimizer.step()
                 

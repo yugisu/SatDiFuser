@@ -7,7 +7,7 @@ from torchvision import transforms
 from typing import Dict, Tuple, Any
 
 import geobench
-
+from datasets.utils import get_sample_center_latlon
 
 
 class BigEarthNet:
@@ -39,7 +39,8 @@ class BigEarthNet:
 
         label = sample.label
         filename = sample.sample_name
-        
+        lat, lon = get_sample_center_latlon(sample)
+
         image = image.transpose(2, 0, 1).astype(np.float32)
         image = image / 4095
         image = np.clip(image, 0, 1)
@@ -64,7 +65,7 @@ class BigEarthNet:
             'rgb': image,
             'label': torch.tensor(label, dtype=torch.float32),
             'filename': filename,
-            'metadata': {}
+            'metadata': {'lat': lat, 'lon': lon},
         }
         return output
 

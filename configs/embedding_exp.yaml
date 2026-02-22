@@ -1,0 +1,45 @@
+# Satellite image embedding / retrieval experiment.
+# Default dataset: EuroSAT.
+# To switch to BigEarthNet, replace tasks/mret_eurosat.yaml with tasks/mret_bigearthnet.yaml.
+#
+# Training uses geo-aware VICReg loss (no class labels — positives are
+# defined by geographic proximity via geo_positive_threshold_m in the task config).
+#
+# 1. Set environment variable:
+#      export GEO_BENCH_DIR=/path/to/geobench/data
+#
+# 2. Train:
+#      uv run run.py --config configs/embedding_exp.yaml
+#
+# 3. Extract embeddings from a split:
+#      uv run extract_embeddings.py \
+#        --config     configs/embedding_exp.yaml \
+#        --checkpoint experiments/<run>/best_ckpt_step_<N>.pth \
+#        --split      test \
+#        --output_dir embeddings/
+
+lr: 0.001
+op_weight_decay: 1.0e-4
+warmup_epochs: 5
+min_lr: 1.0e-5
+
+# Large batches improve SupCon loss quality (more negatives per step).
+batch_size: 128
+val_batch_size: 64
+num_workers: 4
+
+early_stopping_patience: 10
+max_train_epochs: 40
+eval_every_n_steps: null
+
+report_to: wandb
+wandb_project: "satdifuser-retrieval"
+seed: 42
+exp_folder: "experiments"
+device: "cuda"
+
+base:
+  - _base_/diffusionsat.yaml
+  - _base_/satdifuser.yaml
+  # Dataset + task — swap for tasks/mret_bigearthnet.yaml if needed.
+  - tasks/mret_eurosat.yaml

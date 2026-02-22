@@ -1,0 +1,41 @@
+# EuroSAT — embedding / retrieval task
+# Pairs with _base_/satdifuser.yaml and _base_/diffusionsat.yaml.
+# Class labels are used to construct SupCon positive pairs during training.
+
+dataset_name: 'meurosat'
+task: 'embedding'
+
+num_classes: 10   # used for SupCon positive-pair mining (not for classifier head)
+original_img_size: 64
+img_size: 256
+num_channels: 3
+class_list:
+  - 'AnnualCrop'
+  - 'Forest'
+  - 'HerbaceousVegetation'
+  - 'Highway'
+  - 'Industrial'
+  - 'Pasture'
+  - 'PermanentCrop'
+  - 'Residential'
+  - 'River'
+  - 'SeaLake'
+
+prompt: "A satellite image"
+resize_outputs: -1
+
+# ── Embedding head ────────────────────────────────────────────────────────────
+embedding_dim: 256          # output embedding dimensionality
+normalize_embeddings: true  # L2-normalise output embeddings
+
+# ── Retrieval evaluation & loss ──────────────────────────────────────────────
+# Used both by the VICReg invariance term (training) and the RetrievalEvaluator
+# (validation).  EuroSAT patches are 640 m × 640 m; 500 m covers adjacent ones.
+geo_positive_threshold_m: 500
+
+# ── VICReg loss weights ───────────────────────────────────────────────────────
+# See Bardes et al. 2022 for guidance; defaults match the original paper.
+vicreg_lambda: 25.0   # invariance weight
+vicreg_mu: 25.0       # variance weight
+vicreg_nu: 1.0        # covariance weight
+vicreg_gamma: 1.0     # target std per embedding dimension

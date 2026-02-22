@@ -7,7 +7,7 @@ from torchvision import transforms
 from typing import Dict, Tuple, Any
 from PIL import Image
 import geobench
-
+from datasets.utils import get_sample_center_latlon
 
 
 class ChesaPeake:
@@ -40,7 +40,8 @@ class ChesaPeake:
 
         label = sample.label.data
         filename = sample.sample_name
-        
+        lat, lon = get_sample_center_latlon(sample)
+
         image = image.transpose(2, 0, 1).astype(np.float32)
         image = np.clip(image, 0, 1)
         image = torch.tensor(image)
@@ -72,7 +73,7 @@ class ChesaPeake:
             'rgb': image,
             'label': label,
             'filename': filename,
-            'metadata': {}
+            'metadata': {'lat': lat, 'lon': lon},
         }
         return output
 

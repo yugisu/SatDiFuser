@@ -1,6 +1,37 @@
 import importlib
+import warnings
 from torch.utils.data import Dataset
 import torch
+
+
+def get_sample_center_latlon(sample):
+    """
+    Extract the WGS84 (lat, lon) centroid of the first band in a geobench
+    ``Sample``.  Returns ``(None, None)`` when the band has no geotransform
+    or CRS (e.g. a dataset that was not geo-referenced).
+
+    Requires ``rasterio`` (bundled with geobench).
+    """
+    try:
+        from rasterio.warp import transform as rio_transform
+        from rasterio.crs import CRS
+
+        band = sample.bands[0]
+        if band.transform is None or band.crs is None:
+            return None, None
+
+        h, w = band.data.shape[:2]
+        # Centre pixel in the band's native CRS using the affine transform:
+        #   X = c + col*a + row*b,  Y = f + row*e + col*d
+        cx = band.transform.c + (w / 2) * band.transform.a + (h / 2) * band.transform.b
+        cy = band.transform.f + (h / 2) * band.transform.e + (w / 2) * band.transform.d
+
+        wgs84 = CRS.from_epsg(4326)
+        lons, lats = rio_transform(band.crs, wgs84, [cx], [cy])
+        return float(lats[0]), float(lons[0])
+    except Exception as exc:
+        warnings.warn(f"get_sample_center_latlon: could not extract coordinates — {exc}")
+        return None, None
 
 DATASET_REGISTRY = {
     "meurosat": "m_eurosat.EuroSAT",
