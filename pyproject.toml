@@ -21,4 +21,8 @@ dependencies = [
     "fvcore",
     "rasterio",
     "faiss-cpu",
+    "einops>=0.8.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["archs*", "datasets*", "diffusionsat*", "utils*"]
