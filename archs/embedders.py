@@ -84,6 +84,8 @@ class FuserEmbedder(nn.Module):
         fuser: Literal["gwf"] = "gwf",
         **kwargs,
     ):
+        super().__init__()
+
         self.fuser = GlobalWeightedFuser(
             feature_dims=feature_dims,
             save_timesteps=save_timesteps,
