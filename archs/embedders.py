@@ -1,84 +1,106 @@
-"""
-Embedding decoders for satellite image retrieval.
+from typing import Literal
 
-Each class combines one of the three fuser backbones (Global-Weighted,
-Locally-Weighted, Mixture-of-Experts) with a two-layer MLP projection
-head that maps the pooled, multi-scale diffusion features to a compact,
-L2-normalised embedding vector suitable for nearest-neighbour retrieval.
-
-Usage in create_decoder (utils/tasks.py):
-    task: 'embedding'
-    fuser: 'gw' | 'lw' | 'moe'
-"""
-
-from torch import nn
+import torch
 import torch.nn.functional as F
+from torch import nn
 
 from archs.aggregation_networks import (
     GlobalWeightedFuser,
-    LocalWeightedFuser,
-    MoEWeightedFuser,
 )
 
 
-class EmbeddingProjectorMixin:
+def normalize_embeddings(embeddings: torch.Tensor) -> torch.Tensor:
+    """L2-normalise embeddings along the specified dimension. Assumes batched embeddings of shape (B, D)."""
+    return F.normalize(embeddings, p=2, dim=1)
+
+
+def gem_pool(x: torch.Tensor, p: float = 3.0, eps: float = 1e-6) -> torch.Tensor:
+    """Generalised mean pooling (https://arxiv.org/abs/1711.02512)."""
+    return (
+        F.avg_pool2d(x.float().clamp(min=eps).pow(p), (x.size(-2), x.size(-1)))
+        .pow(1.0 / p)
+        .flatten(1)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Concat embedder - naive, no learnable weights
+# ---------------------------------------------------------------------------
+
+
+class PoolConcatEmbedder(nn.Module):
     """
-    Mixin that appends a two-layer MLP projection head on top of any fuser,
-    converting the spatially-pooled multi-scale features into an (optionally
-    L2-normalised) embedding vector.
-
-    MRO expectation: must appear *before* the concrete fuser in the class
-    definition, e.g.::
-
-        class GWFuserEmbedder(EmbeddingProjectorMixin, GlobalWeightedFuser)
-
-    The mixin forwards ``projection_dim`` to the fuser so that the bottleneck
-    output channels and the projection head input dimension always agree.
+    Zero-shot embedder: pool every (timestep, scale) feature and concatenate.
+    Uses features returned from LDMExtractor directly.
     """
 
     def __init__(
         self,
-        embedding_dim: int = 256,
-        normalize_embeddings: bool = True,
-        projection_dim: int = 384,  # consumed here AND forwarded to the fuser
+        feature_dims: dict,
+        save_timesteps: list[int],
         **kwargs,
     ):
-        # Pass projection_dim down so the fuser bottlenecks output projection_dim channels.
-        super().__init__(projection_dim=projection_dim, **kwargs)
+        super().__init__()
 
-        self.embedding_dim = embedding_dim
-        self.normalize_embeddings = normalize_embeddings
-
-        # Two-layer MLP: global-average-pooled features → embedding space.
-        self.embedding_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # (B, C, H, W) → (B, C, 1, 1)
-            nn.Flatten(),  # → (B, C)
-            nn.Linear(projection_dim, projection_dim),
-            nn.GELU(),
-            nn.Linear(projection_dim, embedding_dim),
+        self.embedding_dim = sum(sum(dims) for dims in feature_dims.values()) * len(
+            save_timesteps
         )
 
-    # ------------------------------------------------------------------
-    # forward
-    # ------------------------------------------------------------------
+    def forward(self, feats: dict, output_shape=None):
+        pooled_vectors = []
+        for ts in sorted(feats.keys()):
+            for scale_feat in feats[ts]:
+                pooled_vectors.append(gem_pool(scale_feat))
+
+        # Concatenate all pooled vectors to get the final embedding.
+        pooled_embedding = torch.cat(pooled_vectors, dim=1)
+
+        return pooled_embedding
+
+    def forward_unpooled(self, feats: dict, output_shape=None):
+        spatial = None
+
+        pooled_embedding = self.forward(feats, output_shape)
+
+        # No unpooled embedding for this embedder thus None.
+        return spatial, pooled_embedding
+
+
+# ---------------------------------------------------------------------------
+# SatDiFuser based embedders - learnable fusion weights
+# ---------------------------------------------------------------------------
+
+
+class FuserEmbedder(nn.Module):
+    """
+    Trainable embedder that uses a fuser for spatial feature transformation and aggregates them.
+    """
+
+    def __init__(
+        self,
+        feature_dims: dict,
+        save_timesteps: list[int],
+        projection_dim: int = 384,
+        fuser: Literal["gwf"] = "gwf",
+        **kwargs,
+    ):
+        self.fuser = GlobalWeightedFuser(
+            feature_dims=feature_dims,
+            save_timesteps=save_timesteps,
+            projection_dim=projection_dim,
+        )
+        num_scales = len(self.fuser.scales)
+
+        self.embedding_dim = projection_dim * num_scales
 
     def forward(self, feats: dict, output_shape=None):
-        """
-        Args:
-            feats:        pyramid dict ``{timestep: [scale_tensor, ...]}``,
-                          as returned by :class:`~archs.ldm_extractor.LDMExtractor`.
-            output_shape: ignored – accepted for API parity with other decoders.
+        _, pooled_embedding = self.forward_unpooled(feats, output_shape)
 
-        Returns:
-            embedding (B, embedding_dim): L2-normalised when
-                ``normalize_embeddings=True``.
-            misc: whatever the underlying fuser returns as its second value
-                (mixing weights, load-balancing loss, …).
-        """
-        fused_feats, misc = super().forward(feats)
+        return pooled_embedding
 
-        # fused_feats: list[(B, projection_dim, H_i, W_i)] at descending scales.
-        # Upsample all to the largest spatial resolution, then sum.
+    def forward_unpooled(self, feats: dict, output_shape=None):
+        fused_feats, _ = self.fuser(feats)  # [(B, projection_dim, H_i, W_i)]
+
         target_h, target_w = fused_feats[0].shape[-2:]
         resized = []
         for feat in fused_feats:
@@ -91,96 +113,10 @@ class EmbeddingProjectorMixin:
                 )
             resized.append(feat)
 
-        pooled = sum(resized)  # (B, projection_dim, H, W)
-        embedding = self.embedding_head(pooled)  # (B, embedding_dim)
+        # (B, projection_dim * num_scales, H, W)
+        spatial = torch.cat(resized, dim=1)
 
-        if self.normalize_embeddings:
-            embedding = F.normalize(embedding, p=2, dim=1)
+        # pool spatial features -> (B, projection_dim * num_scales)
+        pooled_embedding = gem_pool(spatial)
 
-        return embedding, misc
-
-
-# ---------------------------------------------------------------------------
-# Concrete embedder classes
-# ---------------------------------------------------------------------------
-
-
-class GWFuserEmbedder(EmbeddingProjectorMixin, GlobalWeightedFuser):
-    """Global-Weighted fuser with an embedding projection head."""
-
-    def __init__(
-        self,
-        feature_dims,
-        projection_dim: int = 384,
-        embedding_dim: int = 256,
-        normalize_embeddings: bool = True,
-        num_norm_groups: int = 32,
-        num_res_blocks: int = 1,
-        save_timesteps=None,
-        num_classes=None,  # unused; accepted for create_decoder API compatibility
-    ):
-        super().__init__(
-            embedding_dim=embedding_dim,
-            normalize_embeddings=normalize_embeddings,
-            projection_dim=projection_dim,
-            feature_dims=feature_dims,
-            num_norm_groups=num_norm_groups,
-            num_res_blocks=num_res_blocks,
-            save_timesteps=save_timesteps or [],
-        )
-
-
-class LWFuserEmbedder(EmbeddingProjectorMixin, LocalWeightedFuser):
-    """Locally-Weighted fuser with an embedding projection head."""
-
-    def __init__(
-        self,
-        feature_dims,
-        projection_dim: int = 384,
-        embedding_dim: int = 256,
-        normalize_embeddings: bool = True,
-        num_norm_groups: int = 32,
-        num_res_blocks: int = 1,
-        save_timesteps=None,
-        num_classes=None,
-        gating_tempature: float = 1.0,
-    ):
-        super().__init__(
-            embedding_dim=embedding_dim,
-            normalize_embeddings=normalize_embeddings,
-            projection_dim=projection_dim,
-            feature_dims=feature_dims,
-            num_norm_groups=num_norm_groups,
-            num_res_blocks=num_res_blocks,
-            save_timesteps=save_timesteps or [],
-            gating_tempature=gating_tempature,
-        )
-
-
-class MoEFuserEmbedder(EmbeddingProjectorMixin, MoEWeightedFuser):
-    """Mixture-of-Experts fuser with an embedding projection head."""
-
-    def __init__(
-        self,
-        feature_dims,
-        projection_dim: int = 384,
-        embedding_dim: int = 256,
-        normalize_embeddings: bool = True,
-        num_norm_groups: int = 32,
-        num_res_blocks: int = 1,
-        save_timesteps=None,
-        num_classes=None,
-        num_experts: int = 8,
-        top_k: int = 2,
-    ):
-        super().__init__(
-            embedding_dim=embedding_dim,
-            normalize_embeddings=normalize_embeddings,
-            projection_dim=projection_dim,
-            feature_dims=feature_dims,
-            num_norm_groups=num_norm_groups,
-            num_res_blocks=num_res_blocks,
-            save_timesteps=save_timesteps or [],
-            num_experts=num_experts,
-            top_k=top_k,
-        )
+        return spatial, pooled_embedding

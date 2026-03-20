@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from archs.classifiers import GWFuserClassifier, LWFuserClassifier, MoEFuserClassifier
 from archs.segmenters import GWFuserSegUPerNet, LWFuserSegUPerNet, MoEFuserSegUPerNet
-from archs.embedders import GWFuserEmbedder, LWFuserEmbedder, MoEFuserEmbedder
 
 
 class VICRegLoss(nn.Module):
@@ -154,25 +153,6 @@ def create_decoder(cfg, extraction_dims):
             "lw": (LWFuserSegUPerNet, {}),
             "moe": (
                 MoEFuserSegUPerNet,
-                {
-                    "num_experts": cfg.get("num_experts"),
-                    "top_k": cfg.get("top_k"),
-                },
-            ),
-        }
-
-    elif base_task in ["embedding"]:
-        common_kwargs.update(
-            {
-                "embedding_dim": cfg.get("embedding_dim", 256),
-                "normalize_embeddings": cfg.get("normalize_embeddings", True),
-            }
-        )
-        cls_map = {
-            "gw": (GWFuserEmbedder, {}),
-            "lw": (LWFuserEmbedder, {}),
-            "moe": (
-                MoEFuserEmbedder,
                 {
                     "num_experts": cfg.get("num_experts"),
                     "top_k": cfg.get("top_k"),
