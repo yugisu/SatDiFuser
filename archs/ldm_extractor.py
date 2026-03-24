@@ -199,13 +199,15 @@ class LDMExtractor:
                 eta = kwargs.get("eta", 0.0)
                 x0_t, xt_next = get_xt_next(xt, et, at, at_next, eta)
 
-                #x0_preds.append(x0_t)
-                xs.append(xt_next.to('cpu'))
+                # NOTE/PERF: removing GPU-CPU ping pong
+                # xs.append(xt_next.to("cpu"))
+                xs.append(xt_next)
               
                 if cur_t in self.save_timesteps:
                     x0_preds[cur_t] = x0_t
                 
-                torch.cuda.empty_cache()
+                # NOTE/PERF: Commenting out this to improve performance.
+                # torch.cuda.empty_cache()
             
         return x0_preds
     
@@ -331,7 +333,8 @@ class LDMExtractor:
    
     def forward(self, latents, prompts=None, guidance_scale=-1):
         # clear the features
-        torch.cuda.empty_cache()
+        # NOTE/PERF: Commenting out this to improve performance.
+        # torch.cuda.empty_cache()
         bs = latents.shape[0]
         
         if self.diffusion_mode == "inversion":
